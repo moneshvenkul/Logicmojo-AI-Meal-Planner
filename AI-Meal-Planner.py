@@ -1,10 +1,11 @@
 import streamlit as st
 from openai import OpenAI
+import os
 
 st.set_page_config(page_title="AI Meal Planner", page_icon="🍽️", layout="centered" )
 
 try:
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"]) or os.environ.get("OPENAI_API_KEY")
 except KeyError:
     st.error("OpenAI API key not found. Please set it in Streamlit secrets.")
     st.stop()
@@ -101,4 +102,5 @@ if submitted:
             )
         if meal_plan:
             st.subheader("Your AI-Generated Meal Plan")
+
             st.markdown(meal_plan.replace('\n', '  \n'))  # Preserve line breaks in markdown
