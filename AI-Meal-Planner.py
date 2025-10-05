@@ -32,7 +32,7 @@ def save_to_sheet(data):
         st.error("No data to save.")
         return False
     try:
-        conn = GSheetsConnection(st.secrets["spreadsheet"])
+        conn = st.connection("gsheets", type=GSheetsConnection)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         new_row = pd.DataFrame(
