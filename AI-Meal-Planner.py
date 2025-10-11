@@ -280,4 +280,3 @@ else:
                 f"Kcal: {entry['inputs']['kcal']}, "
                 f"Strict Ingredients: {'Yes' if entry['inputs']['exact_ingredients'] else 'No'}"
             )
-
