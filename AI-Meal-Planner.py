@@ -2,6 +2,7 @@ import streamlit as st
 from openai import OpenAI
 import os
 from streamlit_gsheets import GSheetsConnection
+from pymongo import MongoClient
 from datetime import datetime
 import pandas as pd
 
@@ -59,6 +60,94 @@ def save_to_sheet(data):
     except Exception as e:
         st.error(f"An error occurred while saving to Google Sheets: {e}")
         return False
+
+
+def get_mongo_client():
+    """Return a MongoClient using Streamlit secrets or environment variable MONGODB_URI."""
+    mongo_uri = None
+    try:
+        mongo_uri = st.secrets.get("MONGODB_URI")
+    except Exception:
+        pass
+    if not mongo_uri:
+        mongo_uri = os.environ.get("MONGODB_URI")
+    if not mongo_uri:
+        return None
+    try:
+        client = MongoClient(mongo_uri)
+        # quick ping to verify connection
+        client.admin.command('ping')
+        return client
+    except Exception:
+        return None
+
+
+def save_to_mongo(data, db_name="ai_meal_planner", collection_name="meal_plans"):
+    """Save the plan to MongoDB. Returns True on success, False otherwise."""
+    if not data:
+        st.error("No data to save.")
+        return False
+    client = get_mongo_client()
+    if not client:
+        st.error("MongoDB URI not found or connection failed. Set MONGODB_URI in Streamlit secrets or environment variables.")
+        return False
+    try:
+        db = client[db_name]
+        coll = db[collection_name]
+        doc = {
+            "timestamp": datetime.now(),
+            "title": data['title'],
+            "calorie_goal": data['inputs']['kcal'],
+            "ingredients_input": data['inputs']['ingredients'],
+            "exact_ingredients": data['inputs'].get('exact_ingredients', False),
+            "extra": data['inputs'].get('extra'),
+            "full_plan": data['content']
+        }
+        coll.insert_one(doc)
+        return True
+    except Exception as e:
+        st.error(f"An error occurred while saving to MongoDB: {e}")
+        return False
+
+
+def load_from_mongo(limit=10, db_name="ai_meal_planner", collection_name="meal_plans"):
+    """Load recent meal plans from MongoDB and return a list of history entries.
+
+    Each entry matches the shape used in st.session_state.history.
+    """
+    client = get_mongo_client()
+    if not client:
+        return []
+    try:
+        coll = client[db_name][collection_name]
+        cursor = coll.find().sort("timestamp", -1).limit(limit)
+        entries = []
+        for d in cursor:
+            entry = {
+                "title": d.get("title") or f"Plan {d.get('_id')}",
+                "content": d.get("full_plan") or d.get("content") or "",
+                "inputs": {
+                    "ingredients": d.get("ingredients_input") or d.get("ingredients") or "",
+                    "kcal": d.get("calorie_goal") or d.get("kcal") or 0,
+                    "exact_ingredients": d.get("exact_ingredients", False),
+                    "extra": d.get("extra") or None,
+                }
+            }
+            entries.append(entry)
+        return entries
+    except Exception as e:
+        st.error(f"Failed to load from MongoDB: {e}")
+        return []
+# On startup, try to load recent plans from MongoDB if available and history is empty
+if not st.session_state.history:
+    try:
+        loaded = load_from_mongo(limit=20)
+        if loaded:
+            st.session_state.history = loaded
+            st.session_state.latest_plan = loaded[0]
+    except Exception:
+        # ignore load errors at startup; user can press Refresh
+        pass
 
 def generate_meal_plan(ingredients, kcal=2000, exact_ingredients=False,
                        output_format='text', model='gpt-3.5-turbo',
@@ -153,12 +242,29 @@ if st.session_state.latest_plan:
     full_plan_text = st.session_state.latest_plan['content'] + "\n\n" + st.session_state.latest_plan['title']
     st.markdown(full_plan_text.replace('\n', '  \n'))
 
-    if st.button("💾 Save Plan to Google Sheet"):
+    if st.button("💾 Save Plan"):
         with st.spinner("Saving..."):
-            if save_to_sheet(st.session_state.latest_plan):
-                st.success("Plan saved successfully to your Google Sheet!")
+            # Try MongoDB first (preferred). If not configured or fails, fall back to Google Sheets.
+            saved = save_to_mongo(st.session_state.latest_plan)
+            if saved:
+                st.success("Plan saved successfully to MongoDB!")
+            else:
+                # try Google Sheets fallback
+                if save_to_sheet(st.session_state.latest_plan):
+                    st.success("Plan saved successfully to your Google Sheet!")
+                else:
+                    st.error("Failed to save plan to both MongoDB and Google Sheets. Check configuration and try again.")
 
 st.sidebar.title("📜 Generation History")
+if st.sidebar.button("🔄 Refresh from DB"):
+    with st.spinner("Loading from database..."):
+        loaded = load_from_mongo(limit=50)
+        if loaded:
+            st.session_state.history = loaded
+            st.session_state.latest_plan = loaded[0]
+            st.success(f"Loaded {len(loaded)} plans from DB.")
+        else:
+            st.info("No plans found in MongoDB or connection not configured.")
 if st.sidebar.button("Clear History"):
     st.session_state.history = []
     st.session_state.latest_plan = None
