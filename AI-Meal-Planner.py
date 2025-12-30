@@ -563,6 +563,36 @@ def main():
         except Exception:
             pass
 
+        # Hide the "Deploy" button, "Fork" app button, and other toolbar items
+    hide_github_icon = """
+        <style>
+        /* Hide the Streamlit Cloud "Fork" & "Viewer" badges */
+        .viewerBadge_container__1QSob,
+        .styles_viewerBadge__1yB5_,
+        .viewerBadge_link__1S137,
+        .viewerBadge_text__1JaDK {
+            display: none !important;
+        }
+        
+        /* Hide the "Deploy" button */
+        .stDeployButton {
+            display: none;
+        }
+        
+        /* OPTIONAL: Hide the hamburger menu (three dots) */
+        #MainMenu {
+            visibility: hidden;
+        }
+        
+        /* OPTIONAL: Hide the footer "Made with Streamlit" */
+        footer {
+            visibility: hidden;
+        }
+        </style>
+    """
+
+    st.markdown(hide_github_icon, unsafe_allow_html=True)
+    
     # Main app interface
     st.title("🍽️ AI Meal Planner")
     st.write(f"Welcome back, **{st.session_state.user_info['username']}**! Generate personalized meal plans based on your dietary preferences.")
