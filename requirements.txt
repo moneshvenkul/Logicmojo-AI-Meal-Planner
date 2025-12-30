@@ -3,3 +3,4 @@ openai
 st-gsheets-connection
 pymongo
 bcrypt
+streamlit-cookies-manager

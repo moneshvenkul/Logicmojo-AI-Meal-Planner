@@ -4,10 +4,12 @@ import os
 import base64
 from streamlit_gsheets import GSheetsConnection
 from pymongo import MongoClient
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import bcrypt
 import re
+import secrets
+import streamlit_cookies_manager as scm
 
 
 st.set_page_config(
@@ -22,6 +24,7 @@ class AuthManager:
     def __init__(self, db_name="ai_meal_planner", collection_name="users"):
         self.db_name = db_name
         self.collection_name = collection_name
+        self.tokens_collection = "auth_tokens"
 
     def get_mongo_client(self):
         """Return a MongoClient using Streamlit secrets or environment variable MONGODB_URI."""
@@ -146,6 +149,93 @@ class AuthManager:
         finally:
             client.close()
 
+    def generate_token(self, user_id, expiry_days=30):
+        """Generate a secure session token for persistent login."""
+        token = secrets.token_urlsafe(32)
+        client = self.get_mongo_client()
+        if not client:
+            return None
+
+        try:
+            db = client[self.db_name]
+            tokens_collection = db[self.tokens_collection]
+
+            token_data = {
+                "token": token,
+                "user_id": user_id,
+                "created_at": datetime.now(),
+                "expires_at": datetime.now() + timedelta(days=expiry_days)
+            }
+            tokens_collection.insert_one(token_data)
+            return token
+
+        except Exception:
+            return None
+        finally:
+            client.close()
+
+    def validate_token(self, token):
+        """Validate token and return user info if valid."""
+        if not token:
+            return None
+
+        client = self.get_mongo_client()
+        if not client:
+            return None
+
+        try:
+            db = client[self.db_name]
+            tokens_collection = db[self.tokens_collection]
+            users_collection = db[self.collection_name]
+
+            # Find token and check if it's not expired
+            token_doc = tokens_collection.find_one({
+                "token": token,
+                "expires_at": {"$gt": datetime.now()}
+            })
+
+            if not token_doc:
+                return None
+
+            # Get user info
+            from bson.objectid import ObjectId
+            user = users_collection.find_one({
+                "_id": ObjectId(token_doc["user_id"]),
+                "is_active": True
+            })
+
+            if not user:
+                return None
+
+            return {
+                "username": user["username"],
+                "email": user["email"],
+                "user_id": str(user["_id"])
+            }
+
+        except Exception:
+            return None
+        finally:
+            client.close()
+
+    def revoke_token(self, token):
+        """Revoke/delete a session token."""
+        if not token:
+            return
+
+        client = self.get_mongo_client()
+        if not client:
+            return
+
+        try:
+            db = client[self.db_name]
+            tokens_collection = db[self.tokens_collection]
+            tokens_collection.delete_one({"token": token})
+        except Exception:
+            pass
+        finally:
+            client.close()
+
 
 def init_session_state():
     """Initialize session state variables for authentication."""
@@ -159,15 +249,18 @@ def init_session_state():
         st.session_state.history = []
     if 'latest_plan' not in st.session_state:
         st.session_state.latest_plan = None
+    if 'auth_token' not in st.session_state:
+        st.session_state.auth_token = None
 
 
-def show_login_form(auth_manager):
+def show_login_form(auth_manager, cookies):
     """Display login form."""
     st.subheader("🔐 Login")
 
     with st.form("login_form"):
         email = st.text_input("Email", key="login_email", placeholder="Enter your email")
         password = st.text_input("Password", type="password", key="login_password", placeholder="Enter your password")
+        remember_me = st.checkbox("Remember me for 30 days", value=True)
 
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -183,6 +276,15 @@ def show_login_form(auth_manager):
                 if success:
                     st.session_state.authenticated = True
                     st.session_state.user_info = user_info
+                    
+                    # Generate and store token if remember me is checked
+                    if remember_me:
+                        token = auth_manager.generate_token(user_info['user_id'])
+                        if token:
+                            st.session_state.auth_token = token
+                            cookies['auth_token'] = token
+                            cookies.save()
+                    
                     st.success(message)
                     st.rerun()
                 else:
@@ -243,7 +345,7 @@ def show_register_form(auth_manager):
         st.rerun()
 
 
-def show_user_info():
+def show_user_info(auth_manager, cookies):
     """Display user information and logout option."""
     if st.session_state.user_info:
         with st.sidebar:
@@ -254,9 +356,20 @@ def show_user_info():
 
             st.divider()
             if st.button("🚪 Logout", use_container_width=True):
+                # Revoke token
+                if st.session_state.auth_token:
+                    auth_manager.revoke_token(st.session_state.auth_token)
+                
+                # Clear cookies
+                if 'auth_token' in cookies:
+                    del cookies['auth_token']
+                    cookies.save()
+                
+                # Clear session state
                 st.session_state.authenticated = False
                 st.session_state.user_info = None
                 st.session_state.show_register = False
+                st.session_state.auth_token = None
                 # Clear meal plan history on logout for security
                 st.session_state.history = []
                 st.session_state.latest_plan = None
@@ -264,9 +377,25 @@ def show_user_info():
                 st.rerun()
 
 
-def require_authentication(auth_manager):
-    """Main authentication flow."""
+def require_authentication(auth_manager, cookies):
+    """Main authentication flow with persistent login support."""
     init_session_state()
+
+    # Wait for cookies to be ready before proceeding
+    if not cookies.ready():
+        st.stop()
+
+    # Check for existing token in cookies if not already authenticated
+    if not st.session_state.authenticated:
+        stored_token = cookies.get('auth_token')
+        if stored_token:
+            # Try to authenticate with stored token
+            user_info = auth_manager.validate_token(stored_token)
+            if user_info:
+                st.session_state.authenticated = True
+                st.session_state.user_info = user_info
+                st.session_state.auth_token = stored_token
+                # Don't rerun here, just continue to show the app
 
     if not st.session_state.authenticated:
         st.title("🍽️ AI Meal Planner")
@@ -277,11 +406,11 @@ def require_authentication(auth_manager):
             if st.session_state.show_register:
                 show_register_form(auth_manager)
             else:
-                show_login_form(auth_manager)
+                show_login_form(auth_manager, cookies)
 
         return False
     else:
-        show_user_info()
+        show_user_info(auth_manager, cookies)
         return True
 
 
@@ -546,11 +675,14 @@ def main():
     # env 'BACKGROUND_IMAGE_URL', or local 'background.jpg' next to this file)
     set_bg_from_config()
 
+    # Initialize cookies manager
+    cookies = scm.CookieManager()
+
     # Initialize authentication
     auth_manager = AuthManager()
 
     # Require authentication
-    if not require_authentication(auth_manager):
+    if not require_authentication(auth_manager, cookies):
         return
 
     # If authenticated, load user's history on first run
