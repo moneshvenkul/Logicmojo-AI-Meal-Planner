@@ -1,0 +1,6 @@
+[client]
+toolbarMode = "viewer" # Hides the developer options
+showErrorDetails = false # Hides full tracebacks in the UI (crucial for security)
+
+[ui]
+hideTopBar = true # Available in newer versions to hide the top chrome entirely
